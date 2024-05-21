@@ -1,82 +1,104 @@
-/**
- * Implementation of thread pool.
- */
-
-#include <pthread.h>
-#include <stdlib.h>
-#include <stdio.h>
-#include <semaphore.h>
 #include "threadpool.h"
 
 #define QUEUE_SIZE 10
 #define NUMBER_OF_THREADS 3
 
-#define TRUE 1
+threadpool pool; // Глобальная переменная для хранения информации о пуле потоков
 
-// this represents work that has to be 
-// completed by a thread in the pool
-typedef struct 
-{
-    void (*function)(void *p);
-    void *data;
-}
-task;
+// Инициализация пула потоков
+void pool_init(void) {
+    // Выделение памяти под массив потоков
+    pool.threads = (pthread_t*)malloc(sizeof(pthread_t) * NUMBER_OF_THREADS);
 
-// the work queue
-task worktodo;
+    if (pool.threads == NULL) {
+        perror("Error allocating memory for threads");
+        exit(EXIT_FAILURE);
+    }
 
-// the worker bee
-pthread_t bee;
+    // Инициализация очереди
+    initialize_queue(&pool.queue);
 
-// insert a task into the queue
-// returns 0 if successful or 1 otherwise, 
-int enqueue(task t) 
-{
-    return 0;
-}
+    // Инициализация мьютекса
+    if (pthread_mutex_init(&pool.mutex, NULL) != 0) {
+        perror("Error initializing mutex");
+        exit(EXIT_FAILURE);
+    }
 
-// remove a task from the queue
-task dequeue() 
-{
-    return worktodo;
-}
+    // Инициализация семафора
+    if (sem_init(&pool.sem, 0, 0) != 0) {
+        perror("Error initializing semaphore");
+        exit(EXIT_FAILURE);
+    }
 
-// the worker thread in the thread pool
-void *worker(void *param)
-{
-    // execute the task
-    execute(worktodo.function, worktodo.data);
-
-    pthread_exit(0);
+    // Создание и запуск рабочих потоков
+    for (int i = 0; i < NUMBER_OF_THREADS; ++i) {
+        if (pthread_create(&pool.threads[i], NULL, worker, NULL) != 0) {
+            perror("Error creating thread");
+            exit(EXIT_FAILURE);
+        }
+    }
 }
 
-/**
- * Executes the task provided to the thread pool
- */
-void execute(void (*somefunction)(void *p), void *p)
-{
-    (*somefunction)(p);
+// Функция, которую выполняют рабочие потоки
+void* worker(void* param) {
+    while (1) {
+        sem_wait(&pool.sem); // Ожидание сигнала для начала работы
+
+        pthread_mutex_lock(&pool.mutex); // Блокировка мьютекса для доступа к очереди
+        task* current_task = (task*)dequeue(&pool.queue); // Получение задачи из очереди
+        pthread_mutex_unlock(&pool.mutex); // Разблокировка мьютекса
+
+        if (current_task == NULL) {
+            pthread_exit(NULL); // Если задачи нет, завершаем поток
+        }
+
+        execute(current_task->function, current_task->data); // Выполнение задачи
+    }
 }
 
-/**
- * Submits work to the pool.
- */
-int pool_submit(void (*somefunction)(void *p), void *p)
-{
-    worktodo.function = somefunction;
-    worktodo.data = p;
-
-    return 0;
+// Выполнение задачи
+void execute(void (*somefunction)(void* p), void* p) {
+    (*somefunction)(p); // Вызов функции задачи
 }
 
-// initialize the thread pool
-void pool_init(void)
-{
-    pthread_create(&bee,NULL,worker,NULL);
+// Подача работы в пул потоков
+int pool_submit(void (*somefunction)(void* p), void* p) {
+    task* t = (task*)malloc(sizeof(task)); // Выделение памяти под задачу
+    t->function = somefunction;
+    t->data = p;
+
+    pthread_mutex_lock(&pool.mutex); // Блокировка мьютекса для доступа к очереди
+    if (enqueue(&pool.queue, t) != 0) {
+        return 1; // В случае ошибки возвращаем 1
+    }
+    pthread_mutex_unlock(&pool.mutex); // Разблокировка мьютекса
+
+    sem_post(&pool.sem); // Отправка сигнала рабочему потоку о начале работы
+
+    return 0; // В случае успеха возвращаем 0
 }
 
-// shutdown the thread pool
-void pool_shutdown(void)
-{
-    pthread_join(bee,NULL);
+// Завершение работы пула потоков
+void pool_shutdown(void) {
+    // Ожидание завершения всех задач в очереди
+    while (pool.queue.size > 0) { }
+
+    // Отправка сигналов рабочим потокам о завершении работы
+    for (int i = 0; i < NUMBER_OF_THREADS; ++i) {
+        sem_post(&pool.sem);
+    }
+
+    // Ожидание завершения всех рабочих потоков
+    for (int i = 0; i < NUMBER_OF_THREADS; ++i) {
+        pthread_join(pool.threads[i], NULL);
+    }
+
+    // Освобождение памяти, выделенной под массив потоков
+    free(pool.threads);
+
+    // Уничтожение мьютекса
+    pthread_mutex_destroy(&pool.mutex);
+
+    // Уничтожение семафора
+    sem_destroy(&pool.sem);
 }
